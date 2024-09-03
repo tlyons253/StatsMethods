@@ -1,13 +1,7 @@
----
-title: "Test"
-author: "Tim Lyons"
-date: "2024-09-03"
-output: 
-  html_document:
-    keep_md: true
----
-
-
+Test
+================
+Tim Lyons
+2024-09-03
 
 This is a test
 
@@ -15,4 +9,4 @@ $$
 26+6=1
 $$
 
-# Up the 'RA
+# Up the ’RA
