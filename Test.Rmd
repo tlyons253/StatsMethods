@@ -2,7 +2,9 @@
 title: "Test"
 author: "Tim Lyons"
 date: "2024-09-03"
-output: github_document
+output: 
+  github_document:
+    keep_html: true
 ---
 
 ```{r setup, include=FALSE}
@@ -16,3 +18,5 @@ $$
 $$
 
 # Up the 'RA
+
+13 gone and not forgotten
