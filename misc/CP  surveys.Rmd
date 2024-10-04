@@ -1,0 +1,22 @@
+---
+title: "Constant Proportion Surveys"
+author: "Tim Lyons"
+date: "2024-08-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Counting things- constant proportion surveys
+
+A big part of what we do is counting things; either because we want to relate differences in those counts to some environmental variables, management action, or to changes over time. One common method that everyone is fami
+
+### Approach
+
+### Assumptions
+
+### Applications
+
+### Improvements

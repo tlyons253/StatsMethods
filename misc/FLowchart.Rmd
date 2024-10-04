@@ -1,0 +1,54 @@
+---
+title: "Flowchart"
+author: "Tim Lyons"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r flowchart}
+
+DiagrammeR::grViz("digraph {
+  graph [layout = dot, rankdir = TB,
+  splines=ortho]
+  
+  node [shape = rectangle]        
+  rec1 [label = 'Philosophy']
+  rec11 [label = 'Bayesian vs. Frequentist']
+  rec12 [label= 'Null Hypothesis Significance Test (NHST)\n vs. \n Equivalence Testing']
+  rec13 [label= 'Statistical Power']
+
+  
+  # edge definitions with the node IDs
+  rec1 -> rec11
+  rec1 -> rec12
+  rec1 -> rec13
+  
+  rec2 [label= 'Objectives']
+  rec21 [label = 'Trend/Abundance/Density Estimation']
+  rec22 [label = 'Survival']
+  rec23 [label='Other Things']
+  
+  rec3 [label= 'Mark-Recapture']
+  rec4 [label= 'Occupancy Modeling']
+  rec5 [label= 'N Mixture Model']
+  rec8 [label= 'Distance sampling']
+  rec6 [label= 'Mark-Recapture']
+  rec7 [label= 'Community Analysis']
+  rec9 [label= 'Multivariate Methods']
+  
+  rec2 -> rec21
+  rec2 -> rec22
+  rec2 -> rec23
+  
+  {{rank= same; rec1 rec2}}
+ rec22 -> {rec3 rec4 rec5 rec6 rec7 rec8}[style=invis]
+  
+  }"#,
+ # height = 500
+ )
+```
+

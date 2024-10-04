@@ -1,0 +1,22 @@
+---
+title: "Test"
+author: "Tim Lyons"
+date: "2024-09-03"
+output: 
+  github_document:
+    keep_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This is a test
+
+$$
+26+6=1
+$$
+
+# Up the 'RA
+
+13 gone and not forgotten

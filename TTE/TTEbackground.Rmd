@@ -1,0 +1,171 @@
+---
+title: "Heavy lifting for TTE"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+This exists so anything computationally heavy doesn't need to be executted when knitting the RMD
+
+## Data simulation
+
+
+```{r,hide=TRUE,message=FALSE,warning=FALSE}
+#simulate data
+library(tidyverse)
+
+max.age=25
+N=40
+mu.s=qlogis(0.985)
+S<-plogis(mu.s)
+
+true.mat<-matrix(NA,nrow=N,ncol=max.age)
+
+ true.mat[,1]<-1
+ 
+ for(i in 1:N){
+   for(t in 2:max.age){
+     
+     true.mat[i,t]<-true.mat[i,t-1]*rbinom(1,1,S)
+   }
+ }
+ 
+
+true.mat%>%
+  as.data.frame()%>%
+  rownames_to_column(var="nest.id")%>%
+  pivot_longer(cols=starts_with('V'),
+               names_to = 'visit',
+               values_to = 'ld')%>%
+  mutate(is.obs=ifelse(visit=='V25',
+                       1,
+                       rbinom(n=nrow(.),size=1,prob=0.6)
+                       )
+         )%>%
+  filter(!(is.obs==0))%>%
+  mutate( obs.dat=ld*is.obs)->nest.dat
+
+
+
+nest.dat%>%
+  group_by(nest.id)%>%
+  filter(row_number()==min(which(obs.dat==1))|
+           row_number()==min(which(obs.dat==0))|
+           row_number()==max(which(obs.dat==1)))%>%
+  mutate(day=as.numeric(gsub('V','',visit)))%>%
+  mutate(right=lead(day),
+         censor=lead(obs.dat))%>%
+  filter(!(is.na(right)))%>%
+  #mutate(censor=ifelse(inv.censor==1,0,1))%>%
+  select(nest.id,left=day,right,censor)->tte.dat
+
+
+nest.dat%>%
+  mutate(day=as.numeric(gsub('V','',visit)))%>%
+  select(-visit)%>%
+  group_by(nest.id)%>%
+  mutate(exposure=day-lag(day))%>%
+  filter(!is.na(exposure))%>%
+  filter(row_number()<=min(which(obs.dat==0))|
+           obs.dat==1)%>%
+  select(nest.id,day,exposure,
+         obs.ld=obs.dat)->glm.dat
+
+
+save(tte.dat,glm.dat,file='./objects/simdata.RData')
+
+load('./objects/simdata.RData')
+
+
+```
+
+
+## Constant survival
+
+### Nimble
+
+
+
+```{r, results='hide',message=FALSE,warning=FALSE,echo=TRUE}
+library(nimble)
+
+constant.model<-nimble::nimbleCode({
+ gamma0~dflat()
+
+
+  for (j in 1:records) {
+    for (k in left[j]:(right[j]-1)) {
+      UCH[j,k] <- exp(gamma0)
+    }
+
+    S[j] <- exp(-sum(UCH[j,left[j]:(right[j]-1)]))
+    censored[j] ~ dbern(S[j])
+  }
+
+  for (i in 1:25) { #compute the survival function S0
+    UCH0[i]<-exp(gamma0)
+    CH0[i]<-sum(UCH0[1:i]) #sum the unit cumulative hazard to get the cumulative
+                 #hazard (i.e prob of surviving day 1 to i, or S^2,S^3..S^i
+    S0[i]<-exp(-CH0[i]) # transform to survival estimate to time i
+  }
+})
+
+
+
+#define data and constants
+
+nim.const<-list(records=nrow(tte.dat),
+                left=tte.dat$left,
+                right=tte.dat$right)
+nim.dat<-list(censored=tte.dat$censor)
+
+
+#inits
+
+nim.init<-function(){list(
+  gamma0=runif(1,-3,3)
+)
+}
+
+
+constant.nimmod<-nimble::nimbleModel(code=constant.model,
+                               constants=nim.const,
+                               data=nim.dat,
+                               inits=nim.init())
+
+constant.nimmod$calculate()  # Check to make sure initial values are good.
+                              #Should be a real number
+
+
+constant.config<-nimble::configureMCMC(constant.nimmod)
+
+# now is when you can specify different samplers and monitors
+
+
+constant.build<-nimble::buildMCMC(constant.config)
+
+
+#compile things
+
+constant.comp<-nimble::compileNimble(constant.nimmod)
+
+constant.mcmc<-nimble::compileNimble(constant.build, project=constant.comp)
+
+
+samples.constant<-nimble::runMCMC(constant.mcmc,
+                             niter=5000,
+                             nburnin = 1000,
+                             nchains = 3)
+
+
+MCMCvis::MCMCsummary(samples.constant)
+
+1-exp(MCMCvis::MCMCsummary(samples.constant)$mean)
+
+MCMCvis::MCMCtrace(samples.constant,pdf=FALSE)
+getwd()
+save(samples.constant,file='./TTE/objects/samples_constant.RData')
+
+```
+
+
+

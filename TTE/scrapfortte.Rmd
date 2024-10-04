@@ -1,0 +1,352 @@
+---
+title: "Untitled"
+author: "Tim Lyons"
+date: "2024-09-12"
+output: html_document
+---
+
+
+
+
+### Analysis using logistic exposure
+```{r}
+#####   Create the link function
+
+
+logexp <- function(exposure = 1) {
+  ## hack to help with visualization, post-prediction etc etc
+  get_exposure <- function() {
+    if (exists("..exposure", env=.GlobalEnv))
+      return(get("..exposure", envir=.GlobalEnv))
+    exposure
+  }
+  linkfun <- function(mu) qlogis(mu^(1/get_exposure()))
+  ## FIXME: is there some trick we can play here to allow
+  ##   evaluation in the context of the 'data' argument?
+  linkinv <- function(eta) plogis(eta)^get_exposure()
+  logit_mu_eta <- function(eta) {
+    ifelse(abs(eta)>30,.Machine$double.eps,
+           exp(eta)/(1+exp(eta))^2)
+  }
+  mu.eta <- function(eta) {
+    get_exposure() * plogis(eta)^(get_exposure()-1) *
+      logit_mu_eta(eta)
+  }
+  valideta <- function(eta) TRUE
+  link <- paste("logexp(", deparse(substitute(exposure)), ")",
+                sep="")
+  structure(list(linkfun = linkfun, linkinv = linkinv,
+                 mu.eta = mu.eta, valideta = valideta,
+                 name = link),
+            class = "link-glm")
+}
+
+###  Center the 'day' variable like in the data generating process
+
+glm.dat%>%
+  mutate(c.day= day-13,
+         age=day-exposure)->glm.dat2
+
+
+
+###########
+
+
+mod.logexp<-glm(obs.ld~age,family=binomial(link=logexp(glm.dat2$exposure)),
+                data=glm.dat2)
+
+broom::tidy(mod.logexp)%>%
+  pull(estimate)->parms
+
+pred.dat<-data.frame(age=seq(1,25,1),
+                     dsr=S)
+
+pred.dat%>%
+  mutate(logit.dsr=plogis(parms[1]+parms[2]*age))
+
+mod.clog<-glm(obs.ld~c.day+offset(log(exposure)),
+              family=binomial(link='cloglog'),
+              data=glm.dat2)
+
+broom::tidy(mod.clog)%>%
+              pull(estimate)->parms
+
+mu.exp<-glm.dat2%>%pull(exposure)%>%mean()
+
+pred.dat%>%
+  mutate(lp=parms[1]+parms[2]*c.day+log(mu.exp),
+         clog.dsr=1-exp(-exp(lp)))
+
+
+
+
+# We need the mean exposure value as an offset to get back to the data-generating value?
+```
+
+
+
+
+
+### Time-Varying survival
+
+
+```{r}
+#simulate data
+library(tidyverse)
+max.age=25
+N=40
+mu.s=qlogis(0.985)
+time=seq(-12,12,1)
+beta.s<-0.1  #effect of age on survival
+S<-plogis(mu.s+beta.s*time)
+
+  true.mat<-matrix(NA,nrow=N,ncol=max.age)
+
+ true.mat[,1]<-1
+
+ for(i in 1:N){
+   for(t in 2:max.age){
+
+     true.mat[i,t]<-true.mat[i,t-1]*rbinom(1,1,S)
+   }
+ }
+
+ true.mat
+
+true.mat%>%
+  as.data.frame()%>%
+  rownames_to_column(var="nest.id")%>%
+  pivot_longer(cols=starts_with('V'),
+               names_to = 'visit',
+               values_to = 'ld')%>%
+  mutate(is.obs=ifelse(visit=='V25',
+                       1,
+                       rbinom(n=nrow(.),size=1,prob=0.6)
+                       )
+         )%>%
+  filter(!(is.obs==0))%>%
+  mutate( obs.dat=ld*is.obs)->nest.dat
+
+
+
+nest.dat%>%
+  group_by(nest.id)%>%
+  filter(row_number()==min(which(obs.dat==1))|
+           row_number()==min(which(obs.dat==0))|
+           row_number()==max(which(obs.dat==1)))%>%
+  mutate(day=as.numeric(gsub('V','',visit)))%>%
+  mutate(right=lead(day),
+         censor=lead(obs.dat))%>%
+  filter(!(is.na(right)))%>%
+  #mutate(censor=ifelse(inv.censor==1,0,1))%>%
+  select(nest.id,left=day,right,censor)->tte.dat
+
+
+nest.dat%>%
+  mutate(day=as.numeric(gsub('V','',visit)))%>%
+  select(-visit)%>%
+  group_by(nest.id)%>%
+  mutate(exposure=day-lag(day))%>%
+  filter(!is.na(exposure))%>%
+  filter(row_number()<=min(which(obs.dat==0))|
+           obs.dat==1)%>%
+  select(nest.id,day,exposure,
+         obs.ld=obs.dat)->glm.dat
+
+```
+
+
+
+This is what the TTE data look like. Left is the date a nest was discovered, right is the last day it was monitored, and censor refers to if the nest survived that interval. Note how nests that failed at some point have two rows, one representing the interval of time that the nest was known to be alive, and another for the interval that the nest failed. This data is formatted for use in a nimble model specified below. The **Survive"** package in R which would otherwise fit a Cox proportional hazards model does not handle interval censoring which is not applicable here. There apparently is a new package in R called **["icenReg"]https://cran.r-project.org/web/packages/icenReg/icenReg.pdf** that uses a similar data structure, but instead of including a "censored" column to indicate right censored data, you set left and right to specific values to indicate censoring. I haven't looked too much into it but it's not clear if individuals are all assumed to start at time=0 or records should be split into multiple rows like we do here. Regardless, the Nimble model runs very quickly so it's not a hassle to use that format.
+```{r}
+ flextable::flextable(tte.dat)%>%
+flextable::set_caption("Time to event survival data")%>%
+  flextable::theme_vanilla() %>%
+  flextable::align(align = "center", part = "all")%>%
+  flextable::border_inner_h(
+    flextable::fp_border_default(width=0),
+                            part='body')%>%
+    flextable::autofit(.)
+```
+
+And here is what the GLM Data look like
+
+```{r}
+ flextable::flextable(glm.dat)%>%
+flextable::set_caption("Time to event survival data")%>%
+  flextable::theme_vanilla() %>%
+  flextable::align(align = "center", part = "all")%>%
+  flextable::border_inner_h(
+    flextable::fp_border_default(width=0),
+                            part='body')%>%
+    flextable::autofit(.)
+```
+
+
+#### Analysis using logistic exposure
+```{r}
+#####   Create the link function
+
+
+logexp <- function(exposure = 1) {
+  ## hack to help with visualization, post-prediction etc etc
+  get_exposure <- function() {
+    if (exists("..exposure", env=.GlobalEnv))
+      return(get("..exposure", envir=.GlobalEnv))
+    exposure
+  }
+  linkfun <- function(mu) qlogis(mu^(1/get_exposure()))
+  ## FIXME: is there some trick we can play here to allow
+  ##   evaluation in the context of the 'data' argument?
+  linkinv <- function(eta) plogis(eta)^get_exposure()
+  logit_mu_eta <- function(eta) {
+    ifelse(abs(eta)>30,.Machine$double.eps,
+           exp(eta)/(1+exp(eta))^2)
+  }
+  mu.eta <- function(eta) {
+    get_exposure() * plogis(eta)^(get_exposure()-1) *
+      logit_mu_eta(eta)
+  }
+  valideta <- function(eta) TRUE
+  link <- paste("logexp(", deparse(substitute(exposure)), ")",
+                sep="")
+  structure(list(linkfun = linkfun, linkinv = linkinv,
+                 mu.eta = mu.eta, valideta = valideta,
+                 name = link),
+            class = "link-glm")
+}
+
+###  Center the 'day' variable like in the data generating process
+
+glm.dat%>%
+  mutate(c.day= day-13,
+         age=day-exposure)->glm.dat2
+
+
+
+###########
+
+
+mod.logexp<-glm(obs.ld~age,family=binomial(link=logexp(glm.dat2$exposure)),
+                data=glm.dat2)
+
+broom::tidy(mod.logexp)%>%
+  pull(estimate)->parms
+
+pred.dat<-data.frame(age=seq(1,25,1),
+                     dsr=S)
+
+pred.dat%>%
+  mutate(logit.dsr=plogis(parms[1]+parms[2]*age))
+
+mod.clog<-glm(obs.ld~c.day+offset(log(exposure)),
+              family=binomial(link='cloglog'),
+              data=glm.dat2)
+
+broom::tidy(mod.clog)%>%
+              pull(estimate)->parms
+
+mu.exp<-glm.dat2%>%pull(exposure)%>%mean()
+
+pred.dat%>%
+  mutate(lp=parms[1]+parms[2]*c.day+log(mu.exp),
+         clog.dsr=1-exp(-exp(lp)))
+
+
+
+
+# We need the mean exposure value as an offset to get back to the data-generating value?
+```
+Nimble Mode for TTE
+```{r}
+library(nimble)
+
+
+age.model<-nimble::nimbleCode({
+ gamma0~dflat()
+  beta.age~dnorm(0,0.001)
+
+  for (j in 1:records) {
+    for (k in left[j]:(right[j]-1)) {
+      UCH[j,k] <- exp(gamma0+beta.age*age[k])
+    }
+
+    S[j] <- exp(-sum(UCH[j,left[j]:(right[j]-1)]))
+    censored[j] ~ dbern(S[j])
+  }
+
+  for (i in 1:25) { #compute the survival function S0
+    UCH0[i]<-exp(gamma0+beta.age*age[i])
+    CH0[i]<-sum(UCH0[1:i]) #sum the unit cumulative hazard to get the cumulative
+                          #hazard (i.e prob of surviving day 1 to i, or S^2,S^3..S^i
+    S0[i]<-exp(-CH0[i]) # transform to survival estimate to time i
+  }
+})
+
+
+
+#define data and constants
+
+nim.const<-list(records=nrow(tte.dat),
+                left=tte.dat$left,
+                right=tte.dat$right,
+                age=seq(1,25,1))
+nim.dat<-list(censored=tte.dat$censor)
+
+
+#inits
+
+nim.init<-function(){list(
+  gamma0=runif(1,-1,0),
+  beta.age=runif(1,-0.1,0.1)
+)
+}
+
+#parameters
+
+parms<-c('gamma0','beta.age','UCH0')
+
+
+my.nimmod<-nimble::nimbleModel(code=age.model,
+                               constants=nim.const,
+                               data=nim.dat,
+                               inits=nim.init())
+my.nimmod$calculate()
+
+
+my.nimmod$initializeInfo()
+
+
+nim.config<-nimble::configureMCMC(my.nimmod)
+
+# now is when you can specify different samplers and monitors
+nim.config$addMonitors(parms)
+
+
+nim.build<-nimble::buildMCMC(nim.config)
+
+
+#compile things
+
+
+comp.mcmc<-nimble::compileNimble(nim.build, project=comp.mod)
+
+
+samples.tte<-nimble::runMCMC(comp.mcmc,
+                             niter=5000,
+                             nburnin = 1000,
+                             nchains = 3)
+
+1-0.0369
+S[1]*S[2]*S[3]
+
+MCMCvis::MCMCsummary(samples.tte)
+MCMCvis::MCMCtrace(samples.tte,pdf=FALSE,params = c('gamma0','beta.age'))
+
+```
+
+
+log(0.985)
+
+
+All estimates are within .004 of each other or less
