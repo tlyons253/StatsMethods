@@ -6,7 +6,6 @@ output:
   github_document:
     toc: true
     toc_depth: 3
-    toc_float: true
 ---
 
 ```{r setup, include=FALSE}
@@ -180,7 +179,8 @@ You can see that the GLM- constant survival estimates the cumulative survival pr
 #### Log-Log link
 An alternative to using logit-link regression is to use a log-log link or:
 $$
-S=exp(-exp(X\beta))\\and\ the\ inverse\\
+S=exp(-exp(X\beta))\\\\
+and\ the\ inverse\\\\
 X\beta=log(-log(S))
 $$
 where $S$ is the survival probability and $X\beta$ is the linear predictor. This approach gives the same interpretation (hazard ratios) of the $\beta_k$ regression coefficients as in proportional hazard models. Often this is preferable to using the logit link because hazards ratios (the relative difference in mortality) don't change whether your model is talking about weekly, monthly, or annual survival. Odds ratios will differ, which may be just confusing or worse, misleading. In R, you have to use the complementary log-log link, which is equivalent to replaceing $S$ with $M$, as that is what $X\beta$ predicts. In R, you still code your data as 1=alive, 0=dead, but you are essentially modeling the 0's when using that data structure and the cloglog link.
