@@ -191,7 +191,7 @@ As the name implies, you're not estimating the probability an event occurs at a 
 
 
 
-The math to develop the survivor function is fundamentally different then using something like logstic(exposure) regression. When using the logit link, you can develop the equivalent information by computing the product of the logit-transformed linear predictors
+The math to develop the survivor function is fundamentally different then using something like logstic (exposure) regression. When using the logit link, you can develop the equivalent information by computing the product of the logit-transformed linear predictors
 $$
 Discrete\ time ,\ logit\ link\\
 S_{n|1}=\prod_{t=1}^{N}S_t=S_1\cdot S_2\cdot S_3...S_n\\
@@ -204,7 +204,7 @@ TTE\ or\ Continuous\ Time-Proportional Hazards\\
 S_{1|n}=exp(-\sum_{t=1}^{N}{exp(X\beta}))
 $$
 It doesn't look like much different, but it makes some math things easier. Particularly, as mentioned before, comparing the effect of a covariate on the outcome at a different unit than what you initially measured $t$ on. It also becomes easier to model a wider of nonlinear effects time or age on survival than is typically available in a GLM (e.g. linear, quadratic, cubic...).
-The figure to the right demonstrates that. It comes from a TTE workshop I took at the TWS meeting in Reno in 2019, though the data are on a long-term deer survival study in northern MN. [You can access all the workshop materials here.]("N:\Lyonst\TTE_Workshop").
+The figure to the right demonstrates that. It comes from a TTE workshop I took at the TWS meeting in Reno in 2019, though the data are on a long-term deer survival study in northern MN. [You can access all the workshop materials here.](https://github.com/tlyons253/StatsMethods/tree/master/TTE/TWS2019)
 
 ```{r, out.width='100%'}
 knitr::include_graphics('./memes/hazard_surv.jpg')
