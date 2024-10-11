@@ -43,14 +43,14 @@ There are some key concepts that are important to understanding TTE analyses and
 Censoring and truncation are common to survival analyses and you've dealt with it whether you've used TTE analyses or a GLM (e.g. logistic exposure). 
 
 #### Interval Censoring
-The most common method of censoring is interval censoring. This is where you don't know the exact event time, just that occurred sometime during an interval during the observation. So unless you are checking nests or your radio-marked individuals every day, you will have interval censored data. If you are fitting a GLM with a logit link, you probably  dealt with interval censoring by using the logistic exposure link or another technique (like a cloglog link + offset). If you are familiar with Program MARK and have used the known-fate module there, the concept of interval censoring might seem confusing (it is for me at least) because, if you lose track of an individual, you code an interval as '00' to indicate an individual was missing, and thus, censor that time period. They refer to it as interval censoring, but it's not the same "interval censoring" as is mentioned in most other texts regarding TTE or survival analyses. It's more accurately called interval truncation and DeCesare et.al (2015^[]) give a good explanation. It's an artifact of Program MARK using a model that does not permit interval censoring. They even tell you that you should use their nest-survival module if you have interval censoring.
+The most common method of censoring is interval censoring. This is where you don't know the exact event time, just that occurred sometime during an interval during the observation. So unless you are checking nests or your radio-marked individuals every day, you will have interval censored data. If you are fitting a GLM with a logit link, you probably  dealt with interval censoring by using the logistic exposure link or another technique (like a cloglog link + offset). If you are familiar with Program MARK and have used the known-fate module there, the concept of interval censoring might seem confusing (it is for me at least) because, if you lose track of an individual, you code an interval as '00' to indicate an individual was missing, and thus, censor that time period. They refer to it as interval censoring, but it's not the same "interval censoring" as is mentioned in most other texts regarding TTE or survival analyses. It's more accurately called interval truncation and DeCesare et.al (2015^[DeCesare, N. J., M. Hebblewhite, P. M. Lukacs, D. Hervieux. 2015. Evaluating Sources of censoring and truncation in telemetry-based survival data. Journal of Wildlife Management. 80: 138-148. https://wildlife.onlinelibrary.wiley.com/doi/full/10.1002/jwmg.991]) give a good explanation. It's an artifact of Program MARK using a model that does not permit interval censoring. They even tell you that you should use their nest-survival module if you have interval censoring.
 
 Compare that to TTE analysis or almost any other analysis we'll use where interval censoring is allowed. In this, you do not need to drop these observations. If the animal is observed detected dead later on, the interval censoring handles the uncertainty as to when mortality occurred. If you observe them alive later you know they survived. If you never encounter them dead or alive again, it's just right censoring, and you are relying on the assumption that censoring is not informative. This also requires that the probability of detecting an individual doesn't depend on their fate-the probability of finding that individual that went missing is the same, regardless if you are finding them dead or alive.
 
 
 #### Right Censoring and informative censoring
 
-If you lose track of an individual and never find them (alive or dead) or they haven't died yet when the study ends, this is right-censoring. In the latter case, it's called fixed censoring, whereas the former, it's assumed random. That is, dying doesn't cause you to loose track of an individual. If this censoring is informative (radio transmitters fail because they are destroyed by cars/people/predators) then your survival estimate will be biased. This is true regardless if you analyze the data in a TTE framework or a logistic regression framework. If it is random (or at least nearly) then it doesn't matter. If you do loose track of a lot of individuals without knowing their fate, it's recommended you don't use an approach that relies on accurately knowing it.
+If you lose track of an individual and never find them (alive or dead) or they haven't died yet when the study ends, this is right-censoring. In the latter case, it's called fixed censoring, whereas the former, it's assumed random. That is, dying doesn't cause you to loose track of an individual. If this censoring is informative (radio transmitters fail because they are destroyed by cars/people/predators) then your survival estimate will be biased. This is true regardless if you analyze the data in a TTE framework or a logistic regression framework. If it is random (or at least nearly) then it doesn't matter. If you do lose track of a lot of individuals without knowing their fate, it's recommended you don't use an approach that relies on accurately knowing it.
 
 ```{r, out.width='50%', fig.align='center'}
 knitr::include_graphics('./memes/pawnstars.jpg',)
@@ -112,17 +112,29 @@ data.frame(surv.mat)%>%
   mutate(time=as.numeric(str_replace(time,'X','')))->surv.dat
 
 
-dsr<-(sum(surv.dat$LD)/100)
+dsr<-surv.dat%>%
+  filter(time!='1')%>%
+  group_by(id)%>%
+  filter(cumsum(LD==0) <2)%>%
+  ungroup()%>%
+  summarize(dsr=sum(LD)/length(LD))
 
-broom::tidy(glm(LD~time,family='binomial',data=surv.dat))%>%
+surv.dat%>%
+  filter(time!='1')%>%
+    mutate(time.int=time-1)%>%
+glm(LD~ time.int,family='binomial',data=.)%>%
+  broom::tidy(.)%>%
   select(estimate)->tmp
-  data.frame(time=seq(0,10,1))%>%
+
+
+  data.frame(time=seq(1,10,1))%>%
                mutate(
              lp=tmp$estimate[[1]]+tmp$estimate[[2]]*time,
-             p=plogis(lp),
-             p=lag(p),
-             p=ifelse(is.na(p),1,p))->tmp2
-plogis(3.33)
+              p=plogis(lp),
+               p=lag(p),
+               p=ifelse(is.na(p),1,p)
+             )->tmp2
+
 
 surv.dat%>%
   group_by(time)%>%
@@ -136,14 +148,13 @@ surv.dat%>%
 
   arrange(time,desc(type))->km
 
-dsr.df<-data.frame(time=seq(1,10,1),
+dsr.df<-data.frame(time=seq(2,10,1),
                    dsr=dsr)%>%
-  add_row(time=0,dsr=1)%>%
+  add_row(time=1,dsr=1)%>%
   arrange(time)%>%
   mutate(c.surv=cumprod(dsr))
 
 km%>%
-  add_row(time=0,N=10)%>%
   arrange(time)%>%
   mutate(c.dsr=cumprod(dsr),
          c.surv=N/10)%>%
@@ -175,7 +186,7 @@ km%>%
        legend.background = element_rect(fill=NA))
 ```
 
-You can see that the GLM- constant survival estimates the cumulative survival probability as being much lower throughout than observed in the data, which is what the KM estimate shows. Nevertheless, they all produce the same average daily survival rate. The GLM that allowed time-varying survival is a better approximation of the KM curve, but also may just be overfitting, as the data for the plot were simulated using a constant survival probability, so any deviation from the blue line is sampling error.
+You can see that the GLM- constant survival estimates the cumulative survival probability as being lower than observed in the data, until the end, which is what the KM estimate shows. Nevertheless, they all produce the same average daily survival rate. The GLM that allowed time-varying survival is a better approximation of the KM curve, but also may just be overfitting, as the data for the plot were simulated using a constant survival probability, so any deviation from the blue line is sampling error.
 
 #### Log-Log link
 An alternative to using logit-link regression is to use a log-log link or:
@@ -214,10 +225,9 @@ knitr::include_graphics('./memes/hazard_surv.jpg')
 The textbook definition of the hazard is the instantaneous rate of mortality. If the hazard is high, mortality is high and vice versa. TTE focuses on estimating the timing of events regardless of actual procedure.
 
 The simplest form of a TTE linear model is
-$$
-h(t) = \lambda_0 \cdot \lambda_t
-$$
-This is the hazard at time $t$, is the product of some baseline hazard $\lambda_0$, and covariates $\lambda_t$that can be modeled using a log link $\lambda_t=exp(\beta_1X_1+\beta_2X_2...\beta_kX_k)$.
+$$h(t) = \lambda_0 \cdot \lambda_t$$
+This is the hazard at time $t$, is the product of some baseline hazard $\lambda_0$, and covariates $\lambda_t$that can be modeled using a log link 
+$$\lambda_t=exp(\beta_1X_1+\beta_2X_2...\beta_kX_k)$$.
 
 This particular formulation is a proportional hazards (PH) model. Proportional hazards models can be semi-parametric, where you don't try to specify a distribution of the baseline hazard, or fully parametric where you do.
 
@@ -266,7 +276,7 @@ Typically, however, when you are fitting an AFT model you're not writing a linea
 
 #### What makes a model an AFT and/or PH?
 
-These graphs from [here]("https://cran.r-project.org/web/packages/eha/vignettes/parametric.html") help visually demonstrate it, as does the lecture notes found [here]("https://myweb.uiowa.edu/pbreheny/7210/f19/notes/10-15.pdf"). The PH has proportional hazards, but not a constant hazard rate. In short a proportional hazards model assumes that the hazard ratio doesn't change as time changes. A graph of the hazard of two groups over time would be parallel, with the peak in the hazard occurring at the same time. In the AFT, the hazard peaks earlier or later for one group. So it's a difference of up/down vs. left/right. This is what is meant when books/slides say an AFT "stretches" time in an AFT.
+These graphs from [here](https://cran.r-project.org/web/packages/eha/vignettes/parametric.html) help visually demonstrate it, as does the lecture notes found [here](https://myweb.uiowa.edu/pbreheny/7210/f19/notes/10-15.pdf). The PH has proportional hazards, but not a constant hazard rate. In short a proportional hazards model assumes that the hazard ratio doesn't change as time changes. A graph of the hazard of two groups over time would be parallel, with the peak in the hazard occurring at the same time. In the AFT, the hazard peaks earlier or later for one group. So it's a difference of up/down vs. left/right. This is what is meant when books/slides say an AFT "stretches" time in an AFT.
 <br>
 ```{r, out.width='100%'}
 knitr::include_graphics('./memes/AFTvPH.jpg')
@@ -279,7 +289,7 @@ The other big difference is that when you fit an AFT model, you will code it up 
 
 * You typically won't use an AFT with left truncation-why? You need those data to help fit the curve/ determine the appropriate shape of the baseline hazard. But if you want to be risky and specify one anyway, hope you're right, you can "predict" outside of your sample the survival times of those individuals you never observed.
 
-Because it's hard to know what distribution to use for that baseline hazard (i.e. how does the hazard vary with time) it's usually easier to turn an exponential PH model (which is not technically an AFT, as it has a constant baseline hazard) and throw in tricks to account for temporal variation or non-constant hazard ratios (see the slides from Reno). This approach works and is probably what you will end up doing most of the time, but as it gets more complicated (e.g. time-varying coefficients, piecewise exponential model), I think it feels a little too "Dr. Moreau" ([clearly, Brando's best film ever]("https://en.wikipedia.org/wiki/The_Island_of_Dr._Moreau_(1996_film)"))
+Because it's hard to know what distribution to use for that baseline hazard (i.e. how does the hazard vary with time) it's usually easier to turn an exponential PH model (which is not technically an AFT, as it has a constant baseline hazard) and throw in tricks to account for temporal variation or non-constant hazard ratios (see the slides from Reno). This approach works and is probably what you will end up doing most of the time, but as it gets more complicated (e.g. time-varying coefficients, piecewise exponential model), I think it feels a little too "Dr. Moreau" ([clearly, Brando's best film ever](https://en.wikipedia.org/wiki/The_Island_of_Dr._Moreau_(1996_film)))
 
 
 ## Example: nest survival
