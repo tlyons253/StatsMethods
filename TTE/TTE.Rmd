@@ -186,7 +186,7 @@ km%>%
        legend.background = element_rect(fill=NA))
 ```
 
-You can see that the GLM- constant survival estimates the cumulative survival probability as being lower than observed in the data, until the end, which is what the KM estimate shows. Nevertheless, they all produce the same average daily survival rate. The GLM that allowed time-varying survival is a better approximation of the KM curve, but also may just be overfitting, as the data for the plot were simulated using a constant survival probability, so any deviation from the blue line is sampling error.
+You can see that the GLM- constant survival estimates the cumulative survival probability as being lower than observed in the data, until the end, which is what the KM estimate shows. Nevertheless, they all produce the same average daily survival rate. The GLM that allowed time-varying survival is a better approximation of the KM curve, but also may just be overfitting, as the data for the plot were simulated using a constant survival probability.
 
 #### Log-Log link
 An alternative to using logit-link regression is to use a log-log link or:
@@ -477,9 +477,9 @@ samples.constant<-nimble::runMCMC(constant.mcmc,
 
 MCMCvis::MCMCsummary(samples.constant)->post.parms
 
-post.parms
+#post.parms
 
-MCMCvis::MCMCtrace(samples.constant,pdf=FALSE)
+#MCMCvis::MCMCtrace(samples.constant,pdf=FALSE)
 ```
 
 ```{r,echo=FALSE}
@@ -590,18 +590,21 @@ round(dsr.clog,digits=3)
 
 Now compare among the methods
 
-See how they are all very similar to one another and less than 0.005 different than the data-generating value of 0.985? See how only has a small effect  on the cumulative survival probability $(DSR^{25})$, which could just be sampling error. Very mindful, very demure. 
+See how they are all very similar to one another and less than 0.005 different than the data-generating value of 0.985? See how it only has a small effect on the cumulative survival probability $(DSR^{24})$ (24 survival periods to survive 25 days), which could just be sampling error. Very mindful, very demure. 
 
 ```{r}
+
+
 parms.nim%>%
+  rownames_to_column(var='param')%>%
+  filter(param=='gamma0')%>%
   pull(mean)->lp.haz
 
 1-exp(lp.haz)->dsr.haz
 
-
 data.frame(type=c('Hazard','Logistic exposure','Cloglog + offset()','"Truth"'),
            dsr=c(dsr.haz,dsr.logit,dsr.clog, 0.985))%>%
-  mutate(c.surv=dsr^25)%>%
+  mutate(c.surv=dsr^24)%>%
   mutate(across(2:3,~round(.x,digits=3)))%>%
   rename(Model=1,
          DSR=2,
@@ -626,7 +629,484 @@ flextable::set_caption(flextable::as_paragraph(flextable::as_b('Table 3.'),
 
 ```
 
+
+
+
+
 ### Survival as a function of time
 
-TBA
+As mentioned the biggest advantage of TTE models is the ease with which one can model time-varying survival and then compute the cumulative survival probability (parametric models only).
 
+This time we'll simulate data with an increase in survival as nest age increases. The survival probability for the first interval is 0.93 and the regression coefficent is 0.3.
+
+```{r,hide=TRUE,message=FALSE,warning=FALSE}
+#simulate data
+library(tidyverse)
+set.seed(1234)
+
+max.age=25
+N=40
+age.seq<-seq(0,23,1)
+mu.s=qlogis(0.93)
+beta.age=0.3
+S<-plogis(mu.s+beta.age*age.seq)
+cumprod(S)
+
+
+true.mat<-matrix(NA,nrow=N,ncol=max.age)
+
+ true.mat[,1]<-1
+ 
+ for(i in 1:N){
+   for(t in 2:max.age){
+     
+     true.mat[i,t]<-true.mat[i,t-1]*rbinom(1,1,S[t-1])
+   }
+ }
+ 
+
+set.seed(123)
+true.mat%>%
+  as.data.frame()%>%
+  rownames_to_column(var="nest.id")%>%
+  pivot_longer(cols=starts_with('V'),
+               names_to = 'visit',
+               values_to = 'ld')%>%
+  mutate(
+    is.obs = rbinom(n = nrow(.), size = 1, prob = 0.6),
+    is.obs = ifelse(visit == 'V25', 1, is.obs))%>%
+  mutate(age=as.numeric(str_replace(visit,'V','')))%>%
+  group_by(nest.id)%>%
+  mutate(y=case_when(ld==0& row_number()!=min(
+    which(
+      ld==0 &is.obs==1))~NA,
+    is.obs==0~NA,
+    T~ld))%>%
+  filter(any(y==1))%>% #kicks out any nests that failed before discovery
+  ungroup()%>%
+  select(-visit,-ld,-is.obs)->eh.long
+
+
+eh.long%>%
+  group_by(nest.id)%>%
+  filter(row_number()==min(which(y==1),na.rm=TRUE)|
+           row_number()==min(which(y==0),na.rm=TRUE)|
+           row_number()==max(which(y==1)),na.rm=TRUE)%>%
+  mutate(right=lead(age),
+         censor=lead(y))%>%
+  filter(!(is.na(right)))%>%
+  select(nest.id,left=age,right,censor)->tte.dat
+
+eh.long%>%
+  filter(!is.na(y))%>%
+  group_by(nest.id)%>%
+  mutate(exposure=age-lag(age))%>%
+  ungroup()%>%
+  filter(!is.na(exposure))->glm.dat
+
+#save(tte.dat,glm.dat,eh.long,true.mat,file='./objects/simdata_time.RData')
+```
+
+```{r, echo=FALSE}
+load('./objects/simdata_time.RData')
+```
+
+#### Time-varying hazards model
+
+To fit the time-varying hazards model, we fit the exponential model as above, and include a term to account for time. The method below just includes nest age as a covariate, but an alternative is to use a (improper) conditional autoregressive model. The iCAR model doesn't try to specify any kind of functional relationship (like a linear model)
+
+
+
+```{r, results='hide',message=FALSE,warning=FALSE,echo=TRUE}
+library(nimble)
+
+time.model<-nimble::nimbleCode({
+ gamma0~dflat()
+  beta~dflat()
+  
+for(i in 1:25){
+  age[i]<-beta*nest.age[i]
+}
+  for (j in 1:records) {
+    for (k in left[j]:(right[j]-1)) {
+      
+      UCH[j,k] <- exp(gamma0+age[k])
+    }
+
+    S[j] <- exp(-sum(UCH[j,left[j]:(right[j]-1)]))
+    censored[j] ~ dbern(S[j])
+  }
+
+  for (i in 1:25) { #compute the survival function S0
+    UCH0[i]<-exp(gamma0+age[i])
+    CH0[i]<-sum(UCH0[1:i]) #sum the unit cumulative hazard to get the cumulative
+                 #hazard (i.e prob of surviving day 1 to i, or S^2,S^3..S^i
+    S0[i]<-exp(-CH0[i]) # transform to survival estimate to time i
+  }
+})
+
+
+
+#define data and constants
+
+nim.const<-list(records=nrow(tte.dat),
+                left=tte.dat$left,
+                right=tte.dat$right,
+                nest.age=seq(0,24,1))
+nim.dat<-list(censored=tte.dat$censor)
+
+
+#inits
+
+nim.init<-function(){list(
+  gamma0=runif(1,-3,3),
+  beta=runif(1,-1,1)
+)
+}
+
+
+time.nimmod<-nimble::nimbleModel(code=time.model,
+                               constants=nim.const,
+                               data=nim.dat,
+                               inits=nim.init())
+
+time.nimmod$calculate()  # Check to make sure initial values are good.
+                              #Should be a real number
+time.nimmod$initializeInfo
+
+time.config<-nimble::configureMCMC(time.nimmod)
+
+# now is when you can specify different samplers and monitors
+time.config$addMonitors("CH0","UCH0","S0")
+
+time.config$replaceSamplers(target = c('gamma0','beta'),
+                       type= 'AF_slice')
+
+time.build<-nimble::buildMCMC(time.config)
+
+
+#compile things
+
+time.comp<-nimble::compileNimble(time.nimmod)
+
+time.mcmc<-nimble::compileNimble(time.build, project=time.comp)
+
+
+samples.time<-nimble::runMCMC(time.mcmc,
+                             niter=10000,
+                             nburnin = 3000,
+                             nchains = 3)
+
+
+MCMCvis::MCMCsummary(samples.time)->post.parms
+
+#post.parms
+
+#MCMCvis::MCMCtrace(samples.time,pdf=FALSE)
+
+
+
+post.parms%>%
+  rownames_to_column(var='parm')%>%
+  filter(str_detect(parm,'UCH0'))%>%
+  rename(med=`50%`)%>%
+  select(parm,mean,med)%>%
+  mutate(dsr.mean=1-mean,
+        dsr.med=1-med,
+        cumsurv.mean=cumprod(dsr.mean),
+        cumsurv.med=cumprod(dsr.med))->sr.haz
+
+
+
+
+ # save(.,file='./TTE/objects/timevar_results.RData')
+
+```
+
+
+In this case, this simple approach has issues. The data generating model has dsr near the end being >0.99, which is hard for the hazard model to estimate.
+
+
+#### Analysis using logistic exposure
+```{r,echo=TRUE}
+#####   Create the link function
+# Link function comes from Ben Bolker's page: https://rpubs.com/bbolker/logregexp
+
+logexp <- function(exposure = 1) {
+  ## hack to help with visualization, post-prediction etc etc
+  get_exposure <- function() {
+    if (exists("..exposure", env=.GlobalEnv))
+      return(get("..exposure", envir=.GlobalEnv))
+    exposure
+  }
+  linkfun <- function(mu) qlogis(mu^(1/get_exposure()))
+  ## FIXME: is there some trick we can play here to allow
+  ##   evaluation in the context of the 'data' argument?
+  linkinv <- function(eta) plogis(eta)^get_exposure()
+  logit_mu_eta <- function(eta) {
+    ifelse(abs(eta)>30,.Machine$double.eps,
+           exp(eta)/(1+exp(eta))^2)
+  }
+  mu.eta <- function(eta) {
+    get_exposure() * plogis(eta)^(get_exposure()-1) *
+      logit_mu_eta(eta)
+  }
+  valideta <- function(eta) TRUE
+  link <- paste("logexp(", deparse(substitute(exposure)), ")",
+                sep="")
+  structure(list(linkfun = linkfun, linkinv = linkinv,
+                 mu.eta = mu.eta, valideta = valideta,
+                 name = link),
+            class = "link-glm")
+}
+
+###########
+glm.dat%>%
+  mutate(age2=(age-exposure))->glm.dat
+
+mod.logexp<-glm(y~age2,
+                family=binomial(
+                  link=logexp(glm.dat$exposure)),
+                data=glm.dat)
+
+broom::tidy(mod.logexp)->parms.logit
+
+
+
+# parms.logit
+
+
+#DSR
+parms.logit%>%
+  pull(estimate)->dsr.logit
+
+
+# round(dsr.logit,digits=3)
+
+age=seq(0,23,1)
+
+dsr.logexp<-plogis(dsr.logit[1]+dsr.logit[2]*age)
+# dsr.logexp
+# prod(dsr.logexp)           
+#            
+
+
+```
+#### Analysis using the cloglog link and exposure time as an offset.
+
+It turns out that this isn't advisable when there are covariates like this. It may be because it violates the proportional hazards assumption by having time-varying survival like this, but I'm not totally sure to be honest. It could just be a function of the way cloglog cdf changes with covariate values.
+
+
+Not run
+```{r,echo=TRUE,eval=FALSE}
+glm.dat%>%
+  ungroup()%>%
+  mutate(age2=(age-exposure),
+         c.age=scale(age,scale=FALSE),
+         c.exp=scale(exposure),scale=FALSE)->glm.dat
+
+glm.dat$exposure
+
+mean(glm.dat$age)->mu.age
+mean(glm.dat$exposure)
+
+
+mod.clog<-glmmTMB::glmmTMB(y~age+exposure,
+              family=binomial(link='cloglog'),
+              data=glm.dat)
+
+glmmTMB::fixef(mod.clog)$cond->parms.clog
+
+parms.clog
+
+age=seq(0,23,1)
+mean(glm.dat$c.age)->mu.cage
+c.age=age-mu.cage
+#offset not included because log(1) (1 exposure day) = 0
+
+lp= parms.clog[1]+parms.clog[2]*age # linear predicator
+
+dsr.clog=1-exp(-exp(lp))
+
+dsr.clog
+
+S
+########  Comparison   ##########
+
+#logistic exposure DSR
+dsr.logexp
+
+#cloglog DSR
+
+dsr.clog
+
+# "Truth"
+S
+
+#Cumulative survival probabilities
+prod(dsr.logexp)
+prod(dsr.clog)
+prod(S)
+
+# We need the mean exposure value as an offset to get back to the data-generating value? Not here, it makes it very low
+```
+
+#### State-space or HMM formulation
+
+The last step is going to be the equivalent of what Program MARK does. It's Bayesian so I don't have to reformat data or anything like that because if you haven't figured out by now, I'm kind of lazy.
+
+
+```{r}
+library(tidyverse)
+
+eh.long%>%
+  pivot_wider(names_from=age,
+              values_from=y)%>%
+  column_to_rownames(var='nest.id')%>%
+  as.matrix()->y
+
+#Create vector of first obs
+#create vector of last obs
+
+##### Nimble time   ##############
+
+
+library(nimble)
+
+time.ss<-nimble::nimbleCode({
+for(i in 1:nests){
+  for(t in (first[i]+1):last[i]){
+    S[i,t]<-phi[t]*y[i,t-1]
+    y[i,t]~dbern(S[i,t])
+
+  logit(phi[t])<-mu.phi +beta*age[t-1]        
+  }
+
+}
+  
+  #priors
+  
+  mu.phi~dlogis(0,1)
+  beta~dlogis(0,1)
+})
+
+
+
+#define data and constants
+
+eh.long%>%
+  filter(!is.na(y))%>%
+  group_by(nest.id)%>%
+  filter(age==min(age))%>%
+  pull(age)->left.dat
+
+length(left.dat)
+
+eh.long%>%
+  filter(!is.na(y))%>%
+  group_by(nest.id)%>%
+  filter(age==max(age))%>%
+  pull(age)->right.dat
+
+
+
+nim.ss<-list(nests=nrow(y),
+                first=left.dat,
+                last=right.dat)
+
+nim.dat<-list(y=y,
+                age=seq(0,24,1))
+
+
+#inits
+
+nim.init<-function(){list(
+  mu.phi=runif(1,-3,3),
+  beta=runif(1,-1,1),
+  S=matrix(runif(nrow(y)*25,0.5,0.999),nrow=nrow(y),ncol=25),
+  y=matrix(rep(1,nrow(y)*25),nrow=nrow(y),ncol=25)
+)
+}
+
+
+ss.nimmod<-nimble::nimbleModel(code=time.ss,
+                               constants=nim.ss,
+                               data=nim.dat,
+                               inits=nim.init())
+
+#throws an error essentially asking for the z matrix you include as data or initial values in CJS from the Kery Schaub BPA book
+
+ss.nimmod$calculate()  # Check to make sure initial values are good.
+                              #Should be a real number
+ss.nimmod$initializeInfo()
+
+ss.config<-nimble::configureMCMC(ss.nimmod)
+
+# now is when you can specify different samplers and monitors
+#time.config$addMonitors("","","")
+
+ss.config$replaceSamplers(target = c('mu.phi','beta'),
+                       type= 'AF_slice')
+
+ss.build<-nimble::buildMCMC(ss.config)
+
+
+#compile things
+
+ss.comp<-nimble::compileNimble(ss.nimmod)
+
+ss.mcmc<-nimble::compileNimble(ss.build, project=ss.comp)
+
+
+samples.ss.time<-nimble::runMCMC(ss.mcmc,
+                             niter=8000,
+                             nburnin = 1000,
+                             nchains = 3)
+#more errors here but not fatal
+
+MCMCvis::MCMCsummary(samples.ss.time)%>%
+  pull(`50%`)->ss.parms
+
+MCMCvis::MCMCtrace(samples.ss.time,pdf=FALSE)
+
+
+age=seq(0,23,1)
+ss.dsr<-plogis(ss.parms[2]+ss.parms[1]*age)
+ss.dsr
+
+prod(ss.dsr)
+
+
+
+```
+
+
+```{r}
+
+sr.haz[24,6]
+
+
+data.frame(type=c('Hazard','Logistic exposure','State Space','"Truth"'),
+           c.surv=c(sr.haz[24,6],prod(dsr.logexp),prod(ss.dsr), prod(S)))%>%
+ mutate(c.surv=round(c.surv,digits=3))%>%
+  rename(Model=1,
+         `Cumulative survival\n(25d)`=2)%>%
+  pivot_wider(names_from = Model,
+              values_from = 2)%>%
+  mutate(Parameter='25d survival')%>%
+  relocate(Parameter)->time.tab
+
+   flextable::flextable(time.tab)%>%
+flextable::set_caption(flextable::as_paragraph(flextable::as_b('Table 4.'), 
+                                    " Cumulative survival estimate comparison among methods; (time-varying survival)."),
+                       align_with_table = FALSE)%>%
+  flextable::theme_vanilla() %>% 
+  flextable::align(align = "center", part = "all")%>%
+  flextable::border_inner_h(
+    flextable::fp_border_default(width=0),
+                            part='body')%>%
+    flextable::autofit(.)
+```
+
+
+All estimates look good again. I will note, that there is considerably more error when comparing the linear model parameters ($\mu$;$\beta$), but as they say, it all comes out in the wash, or, sampling error. Remember, signs are parameters are reversed for the hazard model. 
